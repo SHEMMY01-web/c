@@ -1,68 +1,83 @@
-import dgram from 'dgram';
+import express from 'express';
 
-const UDP_PORT = process.env.PORT || 8000; // Render sets the PORT env dynamically
+const app = express();
+const PORT = process.env.PORT || 10000; 
 const SUPABASE_URL = 'https://kkltrgjszsuozlrnjrnb.supabase.co/functions/v1/attendance-log';
 
-const server = dgram.createSocket('udp4');
+// Capture raw body text strings sent by the device hardware
+app.use(express.text({ type: '*/*' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
-server.on('error', (err) => {
-  console.error(`UDP Server Error:\n${err.stack}`);
-  server.close();
+// 1. SECURITY & TARGET LOGGING
+app.use((req, res, next) => {
+  const callerIP = req.headers['x-real-ip'] || req.headers['x-forwarded-for'];
+  console.log(`\n--- [SECURITY CHECK] ---`);
+  console.log(`Path: ${req.url} | Method: ${req.method}`);
+  console.log(`Source IP: ${callerIP} | Agent: ${req.headers['user-agent']}`);
+  next();
 });
 
-server.on('message', async (msg, rinfo) => {
-  console.log(`\n--- [PACKET INBOUND] From ${rinfo.address}:${rinfo.port} ---`);
-  
-  // 1. Convert payload to strings and logs for debugging
-  const hexData = msg.toString('hex');
-  const textData = msg.toString('utf8').trim();
-  
-  console.log(`Raw Hex Buffer: ${hexData}`);
-  console.log(`Raw Text Content: ${textData}`);
+// 2. CATCH-ALL ROUTE FOR THE DEVICE HANDSHAKE AND DATA PUSH
+app.all('*', async (req, res) => {
+  let parsedBody = {};
+  const rawString = typeof req.body === 'string' ? req.body.trim() : '';
 
-  try {
-    let userId = "0";
-    let timestamp = new Date().toISOString();
-    let deviceSn = "A-L355-Device";
-
-    // 2. Parse the payload data
-    if (textData.includes('UserCode=') || textData.includes('ID=')) {
-      // If it sends plain text data strings
-      const params = new URLSearchParams(textData.replace(/\r\n|\n|\r/g, '&'));
-      userId = params.get('UserCode') || params.get('ID') || params.get('UserID') || "0";
-      deviceSn = params.get('SN') || params.get('DeviceSN') || deviceSn;
-    } else if (msg.length >= 8) {
-      // Fallback: If it sends raw binary, parse typical biometric structures 
-      // Often bytes 4-7 or similar hold the User ID number
-      userId = msg.readUInt32LE ? msg.readUInt32LE(4).toString() : "1";
+  if (rawString) {
+    console.log('Raw Payload Received:', rawString);
+    try {
+      parsedBody = JSON.parse(rawString);
+    } catch {
+      parsedBody = Object.fromEntries(new URLSearchParams(rawString));
     }
+  } else {
+    // Fallback to query params if no body content
+    parsedBody = req.query;
+  }
 
-    const payloadToSupabase = [{
-      UserID: userId.toString(),
-      TimeString: timestamp,
-      DeviceSN: deviceSn
-    }];
+  console.log('Parsed Dataset:', JSON.stringify(parsedBody));
 
-    console.log(`Forwarding Parsed Event to Supabase:`, JSON.stringify(payloadToSupabase));
+  // If payload dataset is empty, process it as a Keep-Alive Handshake
+  if (Object.keys(parsedBody).length === 0) {
+    console.log('Sending Realand heartbeat authorization sequence.');
+    res.setHeader('Content-Type', 'text/plain');
+    return res.status(200).send("OK\r\nResult=1\r\nCommandId=1\r\nCommand=SelectLog\r\nType=1");
+  }
 
-    // 3. Post cleanly over HTTPS straight to your functional Supabase backend
+  // If actual fingerprint punch logs are present, bundle them up for Supabase
+  try {
+    const items = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
+    const normalizedData = items.map(item => {
+      const safeItem = item || {};
+      const rawTime = safeItem.TimeString || safeItem.timestamp || safeItem.time || safeItem.LogTime || safeItem.date || Date.now();
+      const dateObj = new Date(rawTime);
+
+      return {
+        UserID: (safeItem.UserID || safeItem.user_id || safeItem.u_id || safeItem.uid || safeItem.UserId || safeItem.id || "0").toString(),
+        TimeString: isNaN(dateObj.getTime()) ? new Date().toISOString() : dateObj.toISOString(), 
+        DeviceSN: safeItem.DeviceSN || safeItem.sn || safeItem.device_sn || safeItem.ccid || "A-L355-Device"
+      };
+    });
+
+    console.log('--- FORWARDING ACTIVE TRANSACTION TO SUPABASE ---', JSON.stringify(normalizedData));
+
     const response = await fetch(SUPABASE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payloadToSupabase)
+      body: JSON.stringify(normalizedData),
     });
 
-    console.log(`Supabase Sync Response Status: ${response.status}`);
+    console.log(`Supabase Sync Status Code: ${response.status}`);
+    
+    res.setHeader('Content-Type', 'text/plain');
+    return res.status(200).send("Return=1\r\nOK");
 
   } catch (error) {
-    console.error(`Error processing device packet:`, error.message);
+    console.error('Data Processing Exception:', error.message);
+    return res.status(500).send('Proxy Error');
   }
 });
 
-server.on('listening', () => {
-  const address = server.address();
-  console.log(`Cloud UDP Engine listening on ${address.address}:${address.port}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`HTTP Cloud Gateway active on port ${PORT}`);
 });
-
-// Bind to all incoming network interfaces
-server.bind(UDP_PORT, '0.0.0.0');
