@@ -6,79 +6,60 @@ const SUPABASE_URL = 'https://kkltrgjszsuozlrnjrnb.supabase.co/functions/v1/atte
 
 server.on('listening', () => {
   const address = server.address();
-  console.log(`\n🚀 [LOCAL UDP ENGINE LIVE] Listening on ${address.address}:${address.port}`);
-  console.log(`👉 Waiting for your Realand A-L355 machine to send punches over Wi-Fi...`);
+  console.log(`\n🚀 [BINARY UDP ENGINE LIVE] Listening on ${address.address}:${address.port}`);
+  console.log(`👉 Punch on the device to inspect the raw binary structure...`);
 });
 
 server.on('message', async (msg, rinfo) => {
-  // Clean up any potential null bytes or extreme whitespace typical of low-level hardware streams
-  const rawPayload = msg.toString().replace(/\0/g, '').trim();
+  // 1. Convert the raw buffer directly into a Hexadecimal string for inspection
+  const hexPayload = msg.toString('hex').toUpperCase();
+  const hexGroups = hexPayload.match(/.{1,2}/g)?.join(' ') || hexPayload;
   
-  console.log(`\n📥 [PACKET INTERCEPTED] From Device IP: ${rinfo.address} on Port: ${rinfo.port}`);
-  console.log(`Raw Content: "${rawPayload}"`);
-
-  // Handle initialization handshake strings or standard heartbeats
-  if (!rawPayload || (rawPayload.includes('Command=') && !rawPayload.includes('UserCode'))) {
-    console.log("Device heartbeat handshake detected. Sending acknowledgment...");
-    const ack = Buffer.from("Return=1\r\nOK");
-    server.send(ack, rinfo.port, rinfo.address);
-    return;
-  }
+  console.log(`\n📥 [PACKET INTERCEPTED] From IP: ${rinfo.address}`);
+  console.log(`📦 Raw Hex Bytes (${msg.length} bytes): [ ${hexGroups} ]`);
 
   try {
-    // Standardize all line variations into uniform search query strings
-    const queryCompatible = rawPayload.replace(/\r\n|\n|\r/g, '&');
-    const params = Object.fromEntries(new URLSearchParams(queryCompatible));
-    
-    console.log('Parsed Fields:', JSON.stringify(params));
+    // Temporary extraction logic based on common biometric binary standards:
+    // (We will lock this down perfectly once we see your exact hex output!)
+    let userId = "1";
+    let deviceTime = new Date().toISOString();
 
-    // Fallback assignment with clean parameter isolation
-    const userId = params.UserCode || params.ID || params.UserID || "1";
-    const deviceSN = params.SN || "UC6920230713087"; 
-    
-    // Attempt to grab the person's name from common biometric data tags
-    const personName = params.Name || params.UserName || params.NickName || "Unknown Employee";
-    
-    // Fallback to Server Time ONLY if the machine fails to send its internal log timestamp
-    const deviceTime = params.Time || params.DateTime || params.LogTime || new Date().toISOString();
+    // If packet is small, it might just be a heartbeat or handshake
+    if (msg.length < 10) {
+      console.log("Short packet detected (likely handshake/heartbeat).");
+      const ack = Buffer.from([0x01, 0x00, 0x00, 0x00]); // Standard binary ACK
+      server.send(ack, rinfo.port, rinfo.address);
+      return;
+    }
 
-    // Console Logging for local visibility
-    console.log(`👤 Punch Logged: ${personName.trim()} (ID: ${userId.trim()})`);
-
+    // For now, let's keep sending a baseline payload to keep your Supabase endpoint happy
     const payloadToSupabase = [{
-      UserID: userId.toString().trim(),
-      UserName: personName.toString().trim(), // Added to database payload
+      UserID: userId,
+      UserName: "Decoding Binary...",
       TimeString: deviceTime,
-      DeviceSN: deviceSN.trim()
+      DeviceSN: "UC6920230713087"
     }];
 
-    console.log('Forwarding logs straight out to Supabase Cloud...');
-
-    // Asynchronous network delivery with error handling insulation
     const response = await fetch(SUPABASE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payloadToSupabase)
     });
 
-    console.log(`Supabase Sync Status Code: ${response.status}`);
+    console.log(`Cloud Sync: ${response.status}`);
 
-    // Critical: Tell the device we recorded it so it clears its internal flash memory pool
-    const successReply = Buffer.from("Return=1\r\nOK");
-    server.send(successReply, rinfo.port, rinfo.address, (err) => {
-      if (err) console.error(`Failed to send UDP ACK back to device:`, err);
-      else console.log("Sent confirmation receipt back to biometric machine screen.");
-    });
+    // Send a standard 2-byte or 4-byte success reply to see if the device accepts it
+    const successReply = Buffer.from([0x4F, 0x4B]); // "OK" in hex
+    server.send(successReply, rinfo.port, rinfo.address);
 
   } catch (err) {
-    console.error('Failed to process packet stream:', err.message);
+    console.error('Processing error:', err.message);
   }
 });
 
 server.on('error', (err) => {
-  console.error(`Local Engine Critical Error:\n${err.stack}`);
+  console.error(`Critical Error: ${err.stack}`);
   server.close();
 });
 
-// Explicitly bind to '0.0.0.0' to accept messages routed via Wi-Fi from external IP nodes
 server.bind(PORT, '0.0.0.0');
