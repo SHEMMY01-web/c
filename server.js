@@ -6,59 +6,79 @@ const SUPABASE_URL = 'https://kkltrgjszsuozlrnjrnb.supabase.co/functions/v1/atte
 
 server.on('listening', () => {
   const address = server.address();
-  console.log(`\n🚀 [BINARY UDP ENGINE LIVE] Listening on ${address.address}:${address.port}`);
-  console.log(`👉 Punch on the device to inspect the raw binary structure...`);
+  console.log(`\n🚀 [SECURE UDP ENGINE LIVE] Listening on ${address.address}:${address.port}`);
+  console.log(`👉 Noise filter active. Waiting exclusively for your Realand machine...`);
 });
 
 server.on('message', async (msg, rinfo) => {
-  // 1. Convert the raw buffer directly into a Hexadecimal string for inspection
-  const hexPayload = msg.toString('hex').toUpperCase();
-  const hexGroups = hexPayload.match(/.{1,2}/g)?.join(' ') || hexPayload;
+  const rawPayload = msg.toString().replace(/\0/g, '').trim();
   
-  console.log(`\n📥 [PACKET INTERCEPTED] From IP: ${rinfo.address}`);
-  console.log(`📦 Raw Hex Bytes (${msg.length} bytes): [ ${hexGroups} ]`);
+  // 1. INTERNET NOISE FILTER: Discard packets that look like junk data, HTTP requests, or random port scans
+  if (rawPayload.startsWith('GET ') || rawPayload.startsWith('POST ') || rawPayload.length < 4) {
+    return; // Silently drop public internet scanners
+  }
 
-  try {
-    // Temporary extraction logic based on common biometric binary standards:
-    // (We will lock this down perfectly once we see your exact hex output!)
-    let userId = "1";
-    let deviceTime = new Date().toISOString();
+  // 2. Separate handshakes from real punches
+  if (rawPayload.includes('Command=') && !rawPayload.includes('UserCode')) {
+    console.log(`🤖 [MACHINE HANDSHAKE] Device alive signal received from tunnel proxy.`);
+    const ack = Buffer.from("Return=1\r\nOK");
+    server.send(ack, rinfo.port, rinfo.address);
+    return;
+  }
 
-    // If packet is small, it might just be a heartbeat or handshake
-    if (msg.length < 10) {
-      console.log("Short packet detected (likely handshake/heartbeat).");
-      const ack = Buffer.from([0x01, 0x00, 0x00, 0x00]); // Standard binary ACK
-      server.send(ack, rinfo.port, rinfo.address);
-      return;
+  // 3. Only look for packets that actually contain biometric device markers
+  const isRealDevice = rawPayload.includes('UserCode') || rawPayload.includes('SN=') || rawPayload.includes('LogNo=');
+  
+  if (!isRealDevice) {
+    // If it's the garbled/binary packet, let's look at it just in case it's a binary punch variant
+    if (msg.length > 10 && (rawPayload.includes('') || rawPayload.includes('\\'))) {
+      console.log(`\n📦 [POTENTIAL BINARY PUNCH] ${msg.length} bytes received.`);
+      console.log(`Raw Hex: [ ${msg.toString('hex').toUpperCase().match(/.{1,2}/g)?.join(' ') } ]`);
     }
+    return; // Drop anything else that doesn't look like our biometric machine
+  }
 
-    // For now, let's keep sending a baseline payload to keep your Supabase endpoint happy
+  // 4. Valid Biometric String Packet Process
+  console.log(`\n🎯 [VALID PUNCH INTERCEPTED] Processing real device payload...`);
+  
+  try {
+    const queryCompatible = rawPayload.replace(/\r\n|\n|\r/g, '&');
+    const params = Object.fromEntries(new URLSearchParams(queryCompatible));
+
+    const userId = params.UserCode || params.ID || "Unknown ID";
+    const personName = params.Name || "Employee";
+    const deviceTime = params.Time || new Date().toISOString();
+    const deviceSN = params.SN || "UC6920230713087";
+
+    console.log(`👤 Verified Log: ${personName} (ID: ${userId}) at ${deviceTime}`);
+
     const payloadToSupabase = [{
-      UserID: userId,
-      UserName: "Decoding Binary...",
+      UserID: userId.trim(),
+      UserName: personName.trim(),
       TimeString: deviceTime,
-      DeviceSN: "UC6920230713087"
+      DeviceSN: deviceSN.trim()
     }];
 
+    // Forward clean data to Cloud
     const response = await fetch(SUPABASE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payloadToSupabase)
     });
 
-    console.log(`Cloud Sync: ${response.status}`);
+    console.log(`☁️ Supabase Cloud Sync: ${response.status}`);
 
-    // Send a standard 2-byte or 4-byte success reply to see if the device accepts it
-    const successReply = Buffer.from([0x4F, 0x4B]); // "OK" in hex
+    // Confirm back to device
+    const successReply = Buffer.from("Return=1\r\nOK");
     server.send(successReply, rinfo.port, rinfo.address);
 
   } catch (err) {
-    console.error('Processing error:', err.message);
+    console.error('⚠️ Processing glitch:', err.message);
   }
 });
 
 server.on('error', (err) => {
-  console.error(`Critical Error: ${err.stack}`);
+  console.error(`Critical Failure: ${err.stack}`);
   server.close();
 });
 
