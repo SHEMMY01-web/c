@@ -11,11 +11,13 @@ server.on('listening', () => {
 });
 
 server.on('message', async (msg, rinfo) => {
-  const rawPayload = msg.toString().trim();
+  // Clean up any potential null bytes or extreme whitespace typical of low-level hardware streams
+  const rawPayload = msg.toString().replace(/\0/g, '').trim();
+  
   console.log(`\n📥 [PACKET INTERCEPTED] From Device IP: ${rinfo.address} on Port: ${rinfo.port}`);
   console.log(`Raw Content: "${rawPayload}"`);
 
-  // Handle initialization handshake strings if the hardware requests it
+  // Handle initialization handshake strings or standard heartbeats
   if (!rawPayload || (rawPayload.includes('Command=') && !rawPayload.includes('UserCode'))) {
     console.log("Device heartbeat handshake detected. Sending acknowledgment...");
     const ack = Buffer.from("Return=1\r\nOK");
@@ -23,24 +25,36 @@ server.on('message', async (msg, rinfo) => {
     return;
   }
 
-  // Parse and sync data out to Supabase
   try {
+    // Standardize all line variations into uniform search query strings
     const queryCompatible = rawPayload.replace(/\r\n|\n|\r/g, '&');
     const params = Object.fromEntries(new URLSearchParams(queryCompatible));
     
     console.log('Parsed Fields:', JSON.stringify(params));
 
+    // Fallback assignment with clean parameter isolation
     const userId = params.UserCode || params.ID || params.UserID || "1";
-    const deviceSN = params.SN || "UC6920230713087"; // Enforcing your serial verified from the photo
+    const deviceSN = params.SN || "UC6920230713087"; 
+    
+    // Attempt to grab the person's name from common biometric data tags
+    const personName = params.Name || params.UserName || params.NickName || "Unknown Employee";
+    
+    // Fallback to Server Time ONLY if the machine fails to send its internal log timestamp
+    const deviceTime = params.Time || params.DateTime || params.LogTime || new Date().toISOString();
+
+    // Console Logging for local visibility
+    console.log(`👤 Punch Logged: ${personName.trim()} (ID: ${userId.trim()})`);
 
     const payloadToSupabase = [{
-      UserID: userId.toString(),
-      TimeString: new Date().toISOString(),
-      DeviceSN: deviceSN
+      UserID: userId.toString().trim(),
+      UserName: personName.toString().trim(), // Added to database payload
+      TimeString: deviceTime,
+      DeviceSN: deviceSN.trim()
     }];
 
     console.log('Forwarding logs straight out to Supabase Cloud...');
 
+    // Asynchronous network delivery with error handling insulation
     const response = await fetch(SUPABASE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -49,10 +63,12 @@ server.on('message', async (msg, rinfo) => {
 
     console.log(`Supabase Sync Status Code: ${response.status}`);
 
-    // Confirm receipt back to the machine so it doesn't clear its buffer or keep re-sending
+    // Critical: Tell the device we recorded it so it clears its internal flash memory pool
     const successReply = Buffer.from("Return=1\r\nOK");
-    server.send(successReply, rinfo.port, rinfo.address);
-    console.log("Sent confirmation receipt back to biometric machine screen.");
+    server.send(successReply, rinfo.port, rinfo.address, (err) => {
+      if (err) console.error(`Failed to send UDP ACK back to device:`, err);
+      else console.log("Sent confirmation receipt back to biometric machine screen.");
+    });
 
   } catch (err) {
     console.error('Failed to process packet stream:', err.message);
@@ -60,8 +76,9 @@ server.on('message', async (msg, rinfo) => {
 });
 
 server.on('error', (err) => {
-  console.error(`Local Engine Error:\n${err.stack}`);
+  console.error(`Local Engine Critical Error:\n${err.stack}`);
   server.close();
 });
 
+// Explicitly bind to '0.0.0.0' to accept messages routed via Wi-Fi from external IP nodes
 server.bind(PORT, '0.0.0.0');
