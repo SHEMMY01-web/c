@@ -2,84 +2,45 @@ import dgram from 'dgram';
 
 const server = dgram.createSocket('udp4');
 const PORT = 5000; 
-const SUPABASE_URL = 'https://kkltrgjszsuozlrnjrnb.supabase.co/functions/v1/attendance-log';
 
 server.on('listening', () => {
-  const address = server.address();
-  console.log(`\n🚀 [SECURE UDP ENGINE LIVE] Listening on ${address.address}:${address.port}`);
-  console.log(`👉 Noise filter active. Waiting exclusively for your Realand machine...`);
+  console.log(`\n🚀 [BINARY DECODER LIVE] Listening on port ${PORT}...`);
+  console.log(`👉 Go scan your finger ONCE to break down the structure.`);
 });
 
-server.on('message', async (msg, rinfo) => {
-  const rawPayload = msg.toString().replace(/\0/g, '').trim();
+server.on('message', (msg, rinfo) => {
+  if (msg.length !== 32) return; // Only look at our structural punch packet
+
+  const hexGroups = msg.toString('hex').toUpperCase().match(/.{1,2}/g) || [];
   
-  // 1. INTERNET NOISE FILTER: Discard packets that look like junk data, HTTP requests, or random port scans
-  if (rawPayload.startsWith('GET ') || rawPayload.startsWith('POST ') || rawPayload.length < 4) {
-    return; // Silently drop public internet scanners
-  }
+  console.log(`\n🎯 [PUNCH DETECTED] Packet Size: 32 bytes.`);
+  console.log(`Raw: [ ${hexGroups.join(' ')} ]`);
+  console.log(`--------------------------------------------------`);
+  console.log(`Let's unpack the numeric possibilities:`);
 
-  // 2. Separate handshakes from real punches
-  if (rawPayload.includes('Command=') && !rawPayload.includes('UserCode')) {
-    console.log(`🤖 [MACHINE HANDSHAKE] Device alive signal received from tunnel proxy.`);
-    const ack = Buffer.from("Return=1\r\nOK");
-    server.send(ack, rinfo.port, rinfo.address);
-    return;
-  }
-
-  // 3. Only look for packets that actually contain biometric device markers
-  const isRealDevice = rawPayload.includes('UserCode') || rawPayload.includes('SN=') || rawPayload.includes('LogNo=');
+  // Extract common offsets as numbers
+  const dword0_LE = msg.readUInt32LE(0);
+  const dword0_BE = msg.readUInt32BE(0);
   
-  if (!isRealDevice) {
-    // If it's the garbled/binary packet, let's look at it just in case it's a binary punch variant
-    if (msg.length > 10 && (rawPayload.includes('') || rawPayload.includes('\\'))) {
-      console.log(`\n📦 [POTENTIAL BINARY PUNCH] ${msg.length} bytes received.`);
-      console.log(`Raw Hex: [ ${msg.toString('hex').toUpperCase().match(/.{1,2}/g)?.join(' ') } ]`);
-    }
-    return; // Drop anything else that doesn't look like our biometric machine
-  }
-
-  // 4. Valid Biometric String Packet Process
-  console.log(`\n🎯 [VALID PUNCH INTERCEPTED] Processing real device payload...`);
+  const word4_LE  = msg.readUInt16LE(4);
+  const dword4_LE = msg.readUInt32LE(4);
   
-  try {
-    const queryCompatible = rawPayload.replace(/\r\n|\n|\r/g, '&');
-    const params = Object.fromEntries(new URLSearchParams(queryCompatible));
+  const dword8_LE = msg.readUInt32LE(8);
+  
+  const dword16_LE = msg.readUInt32LE(16);
+  const word20_LE  = msg.readUInt16LE(20);
+  const word22_LE  = msg.readUInt16LE(22);
 
-    const userId = params.UserCode || params.ID || "Unknown ID";
-    const personName = params.Name || "Employee";
-    const deviceTime = params.Time || new Date().toISOString();
-    const deviceSN = params.SN || "UC6920230713087";
-
-    console.log(`👤 Verified Log: ${personName} (ID: ${userId}) at ${deviceTime}`);
-
-    const payloadToSupabase = [{
-      UserID: userId.trim(),
-      UserName: personName.trim(),
-      TimeString: deviceTime,
-      DeviceSN: deviceSN.trim()
-    }];
-
-    // Forward clean data to Cloud
-    const response = await fetch(SUPABASE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payloadToSupabase)
-    });
-
-    console.log(`☁️ Supabase Cloud Sync: ${response.status}`);
-
-    // Confirm back to device
-    const successReply = Buffer.from("Return=1\r\nOK");
-    server.send(successReply, rinfo.port, rinfo.address);
-
-  } catch (err) {
-    console.error('⚠️ Processing glitch:', err.message);
-  }
-});
-
-server.on('error', (err) => {
-  console.error(`Critical Failure: ${err.stack}`);
-  server.close();
+  console.log(`• Bytes 0-3   (Hex: ${hexGroups.slice(0,4).join('')}) -> As Number: ${dword0_LE} (LE) or ${dword0_BE} (BE)`);
+  console.log(`• Bytes 4-5   (Hex: ${hexGroups.slice(4,6).join('')}) -> As Number: ${word4_LE}`);
+  console.log(`• Bytes 4-7   (Hex: ${hexGroups.slice(4,8).join('')}) -> As Number: ${dword4_LE}`);
+  console.log(`• Bytes 8-11  (Hex: ${hexGroups.slice(8,12).join('')}) -> As Number: ${dword8_LE}`);
+  console.log(`• Bytes 16-19 (Hex: ${hexGroups.slice(16,20).join('')}) -> As Number: ${dword16_LE}`);
+  console.log(`• Bytes 20-21 (Hex: ${hexGroups.slice(20,22).join('')}) -> As Number: ${word20_LE}`);
+  console.log(`• Bytes 22-23 (Hex: ${hexGroups.slice(22,24).join('')}) -> As Number: ${word22_LE}`);
+  
+  console.log(`\n💡 To help me map this instantly, what is the exact ID number of the user registered on the machine you just scanned?`);
+  console.log(`--------------------------------------------------`);
 });
 
 server.bind(PORT, '0.0.0.0');
